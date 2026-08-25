@@ -6,6 +6,8 @@
 use std::sync::LazyLock;
 
 use github_actions_expressions::context::{self};
+use github_actions_models::common::expr::ExplicitExpr;
+use github_actions_models::workflow::job::RunsOn;
 use github_actions_models::{
     common::{self, expr::LoE},
     workflow::{
@@ -314,6 +316,31 @@ impl<'doc> NormalJob<'doc> {
             self.steps()
                 .filter_map(|step| step.r#if().map(|cond| (cond, step.location()))),
         )
+    }
+
+    /// Exposes whether a job runs with a self-hosted runner
+    /// Implements a boolean version of what we do in the self_hosted_runner
+    /// audit.
+    pub(crate) fn runs_on_self_hosted_runner(&self) -> bool {
+        match &self.runs_on {
+            LoE::Literal(RunsOn::Target(labels)) => {
+                let Some(label) = labels.first() else {
+                    return false;
+                };
+
+                label == "self-hosted" || ExplicitExpr::from_curly(label).is_some()
+            }
+            LoE::Literal(RunsOn::Group { .. }) => true,
+            LoE::Expr(exp) => {
+                let Some(matrix) = self.matrix() else {
+                    return false;
+                };
+
+                matrix.expansions().iter().any(|expansion| {
+                    exp.as_bare() == expansion.path && expansion.value.contains("self-hosted")
+                })
+            }
+        }
     }
 }
 

@@ -7,7 +7,7 @@ fn test_superfluous_actions() -> anyhow::Result<()> {
             .input(input_under_test("superfluous-actions.yml"))
             .args(["--persona=pedantic"])
             .run()?,
-        @"
+        @r"
     info[superfluous-actions]: action functionality is already included by the runner
       --> @@INPUT@@:16:15
        |
@@ -28,7 +28,17 @@ fn test_superfluous_actions() -> anyhow::Result<()> {
        |
        = note: audit confidence → Low
 
-    3 findings (1 ignored): 2 informational, 0 low, 0 medium, 0 high
+    info[superfluous-actions]: action functionality is already included by the runner
+      --> @@INPUT@@:37:15
+       |
+    36 |       - name: update comment
+       |         -------------------- this step
+    37 |         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+       |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ use `gh pr comment` or `gh issue comment` in a script step
+       |
+       = note: audit confidence → Low
+
+    5 findings (1 ignored, 1 suppressed): 3 informational, 0 low, 0 medium, 0 high
     ");
 
     Ok(())

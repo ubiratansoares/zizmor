@@ -22,3 +22,16 @@ jobs:
       # has a hidden span for the entire step.
       - name: test ignore # zizmor: ignore[superfluous-actions]
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+
+  # https://github.com/zizmorcore/zizmor/issues/1865
+  issue-1865:
+    name: issue-1865
+    runs-on: [self-hosted, ubuntu-xxx]
+    steps:
+      # for self-hosted runners we don't flag this action, since it does additional setup
+      - name: setup rust
+        uses: dtolnay/rust-toolchain@086dfa4efe372cfb6b375460a56e26a62a873d2e # 1.93.1
+
+      # flagged as expected
+      - name: update comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
