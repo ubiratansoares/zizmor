@@ -102,10 +102,28 @@ impl<'doc> ImageCandidate<'doc> {
     /// A candidate for an image reference that we can't analyze statically,
     /// e.g. one derived from a non-`matrix` context or a dynamic matrix
     /// expansion.
-    fn opaque(location: SymbolicLocation<'doc>, related: Vec<SymbolicLocation<'doc>>) -> Self {
+    fn fully_opaque(
+        location: SymbolicLocation<'doc>,
+        related: Vec<SymbolicLocation<'doc>>,
+    ) -> Self {
         Self {
             annotation: "container image may be unpinned",
             confidence: Confidence::Low,
+            persona: Persona::Regular,
+            location,
+            related,
+        }
+    }
+
+    /// Same as `fully_opaque`, but with high confidence,
+    /// usually derived from matrix expansions
+    fn partially_opaque(
+        location: SymbolicLocation<'doc>,
+        related: Vec<SymbolicLocation<'doc>>,
+    ) -> Self {
+        Self {
+            annotation: "container image may be unpinned",
+            confidence: Confidence::High,
             persona: Persona::Regular,
             location,
             related,
@@ -131,7 +149,7 @@ fn collect_candidates<'doc>(
             let Ok(parsed) = Expr::parse(expr.as_bare()) else {
                 // We can't even parse the expression, so we can't say anything
                 // precise about it.
-                return vec![ImageCandidate::opaque(location.clone(), vec![])];
+                return vec![ImageCandidate::fully_opaque(location.clone(), vec![])];
             };
 
             let leaves = parsed.leaf_expressions();
@@ -186,40 +204,92 @@ fn candidates_for_leaf<'doc>(
                 return vec![];
             };
 
-            matrix
-                .expansions()
+            let expansions = matrix.expansions();
+
+            let indirect_matrix = annotated_indetermination(
+                expansions.indeterminate_expansions(),
+                "indirect `matrix` adds combinations we can't see",
+            );
+
+            let missing_inclusions = annotated_indetermination(
+                expansions.indeterminate_inclusions(),
+                "`include` may add combinations we can't see",
+            );
+
+            let missing_exclusions = annotated_indetermination(
+                expansions.indeterminate_exclusions(),
+                "`exclude` may remove combinations we can't see",
+            );
+
+            let mut candidates = expansions
                 .iter()
                 .filter(|expansion| context.matches(expansion.path.as_str()))
                 .flat_map(|expansion| {
                     if expansion.is_static() {
+                        let annotations = vec![
+                            matrix.location().key_only(),
+                            expansion.location().annotated(format!(
+                                "this expansion of {path}",
+                                path = expansion.path
+                            )),
+                        ];
+
                         ImageCandidate::concrete(
                             &DockerUses::parse(&expansion.value),
                             location.clone(),
-                            vec![
-                                matrix.location().key_only(),
-                                expansion.location().annotated(format!(
-                                    "this expansion of {path}",
-                                    path = expansion.path
-                                )),
-                            ],
+                            annotations,
                         )
                         .into_iter()
                         .collect()
                     } else {
-                        // The expansion itself contains an expression, so we
-                        // can't analyze it statically.
-                        vec![ImageCandidate::opaque(
+                        // Evaluate well-known indeterminations
+                        let mut annotations =
+                            vec![expansion.location().annotated(format!(
+                                "this expansion of {path}",
+                                path = expansion.path
+                            ))];
+
+                        annotations.extend(missing_inclusions.clone());
+                        annotations.extend(missing_exclusions.clone());
+
+                        vec![ImageCandidate::partially_opaque(
                             location.clone(),
-                            vec![expansion.location()],
+                            annotations,
                         )]
                     }
                 })
-                .collect()
+                .collect::<Vec<_>>();
+
+            // An indirect matrix, dimensions block means this path may
+            // take values we never saw -- possibly all of them.
+            if expansions.has_indeterminations() {
+                let mut annotations = vec![matrix.location().key_only().annotated("this matrix")];
+
+                annotations.extend(indirect_matrix);
+                annotations.extend(missing_inclusions);
+                annotations.extend(missing_exclusions);
+
+                candidates.push(ImageCandidate::partially_opaque(
+                    location.clone(),
+                    annotations,
+                ));
+            }
+
+            candidates
         }
         // Any other leaf (non-`matrix` context, function call, etc.) can't be
         // analyzed statically.
-        _ => vec![ImageCandidate::opaque(location, vec![])],
+        _ => vec![ImageCandidate::fully_opaque(location, vec![])],
     }
+}
+
+fn annotated_indetermination<'doc>(
+    target: &Option<SymbolicLocation<'doc>>,
+    annotation: &'doc str,
+) -> Option<SymbolicLocation<'doc>> {
+    target
+        .as_ref()
+        .map(|location| location.clone().annotated(annotation))
 }
 
 impl UnpinnedImages {
