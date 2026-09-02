@@ -104,7 +104,52 @@ fn test_pedantic_persona() -> anyhow::Result<()> {
         |
         = note: audit confidence → High
 
-    12 findings: 0 informational, 0 low, 0 medium, 12 high
+    error[unpinned-images]: unpinned image references
+       --> @@INPUT@@:134:7
+        |
+    134 |       image: ${{ matrix.image }}
+        |       ^^^^^^^^^^^^^^^^^^^^^^^^^^ container image may be unpinned
+    ...
+    137 |       matrix: ${{ fromJSON(vars.CUSTOM_TARGETS) }}
+        |       --------------------------------------------
+        |       |
+        |       this matrix
+        |       values are populated indirectly here
+        |
+        = note: audit confidence → Low
+
+    error[unpinned-images]: unpinned image references
+       --> @@INPUT@@:145:7
+        |
+    145 |       image: ${{ matrix.image }}
+        |       ^^^^^^^^^^^^^^^^^^^^^^^^^^ container image may be unpinned
+    ...
+    148 |       matrix:
+        |       ------ this matrix
+    ...
+    151 |         include: ${{ fromJSON(vars.EXTRA_TARGETS) }}
+        |         -------------------------------------------- values are populated indirectly here
+        |
+        = note: audit confidence → Low
+
+    error[unpinned-images]: unpinned image references
+       --> @@INPUT@@:159:7
+        |
+    159 |       image: ${{ matrix.image }}
+        |       ^^^^^^^^^^^^^^^^^^^^^^^^^^ container image is not pinned to a SHA256 hash
+    ...
+    162 |       matrix:
+        |       ------ this matrix
+    ...
+    166 |           - ubuntu:24.04 # tag-pinned
+        |             ------------ this expansion of matrix.image
+    167 |         # NOT OK : may remove combinations
+    168 |         exclude: ${{ fromJSON(vars.KNOWN_BROKEN_COMBOS) }}
+        |         -------------------------------------------------- `exclude` is indirect; this combination may not run
+        |
+        = note: audit confidence → High
+
+    15 findings: 0 informational, 0 low, 0 medium, 15 high
     "
     );
 

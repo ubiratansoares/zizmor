@@ -1,14 +1,13 @@
 //! Strategy matrix modeling and APIs.
 
-use github_actions_expressions::context::Context;
-use github_actions_models::{common::expr::LoE, workflow::job};
-use indexmap::IndexMap;
-
 use crate::{
     finding::location::{Locatable, SymbolicLocation},
     models::workflow::NormalJob,
     utils::extract_fenced_expressions,
 };
+use github_actions_expressions::context::Context;
+use github_actions_models::{common::expr::LoE, workflow::job};
+use indexmap::IndexMap;
 
 /// Represents a concrete expansion of a matrix.
 ///
@@ -61,7 +60,21 @@ impl<'doc> Expansion<'doc> {
     }
 }
 
-pub(crate) struct Expansions<'doc>(Vec<Expansion<'doc>>);
+/// The container for a matrix expansions
+pub(crate) struct Expansions<'doc> {
+    /// Consolidated expansions of  dimensions and explicit rows,
+    /// evaluating inclusions and exclusions
+    expanded: Vec<Expansion<'doc>>,
+
+    /// Whether some inclusions are defined by expressions that
+    /// can't be statically resolved or the matrix itself
+    /// is fully indirect
+    indeterminate_expansions: Option<SymbolicLocation<'doc>>,
+
+    /// Whether some exclusions are defined by expressions that
+    /// can't be fully statically resolved
+    indeterminate_exclusions: Option<SymbolicLocation<'doc>>,
+}
 
 impl<'doc> Expansions<'doc> {
     pub(crate) fn new(matrix: &Matrix<'doc>) -> Self {
@@ -69,7 +82,17 @@ impl<'doc> Expansions<'doc> {
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Expansion<'doc>> {
-        self.0.iter()
+        self.expanded.iter()
+    }
+
+    /// Exposed so findings can annotate with this `SymbolicLocation`
+    pub(crate) fn indeterminate_expansions(&self) -> &Option<SymbolicLocation<'doc>> {
+        &self.indeterminate_expansions
+    }
+
+    /// Exposed so findings can annotate with this `SymbolicLocation`
+    pub(crate) fn indeterminate_exclusions(&self) -> &Option<SymbolicLocation<'doc>> {
+        &self.indeterminate_exclusions
     }
 
     /// Expands the current Matrix into all possible values
@@ -80,15 +103,37 @@ impl<'doc> Expansions<'doc> {
     ///
     fn expand_values(matrix: &Matrix<'doc>) -> Self {
         match matrix.inner {
-            LoE::Expr(_) => Self(vec![]),
+            LoE::Expr(_) => Self {
+                expanded: vec![],
+                indeterminate_expansions: Some(matrix.location()),
+                indeterminate_exclusions: None,
+            },
             LoE::Literal(inner) => {
                 let LoE::Literal(dimensions) = &inner.dimensions else {
-                    return Self(vec![]);
+                    return Self {
+                        expanded: vec![],
+                        indeterminate_expansions: Some(matrix.location()),
+                        indeterminate_exclusions: None,
+                    };
                 };
 
-                let mut expansions = Self::expand_dimensions(dimensions, matrix.location());
+                let mut expanded = Self::expand_dimensions(dimensions, matrix.location());
 
-                // BUG: we should handle LoE::Expr as an indicator of an indirect matrix.
+                // Should be processed before includes, since that's what GitHub does.
+                if let LoE::Literal(excludes) = &inner.exclude {
+                    let to_exclude = excludes
+                        .iter()
+                        .flat_map(|exclude| {
+                            Self::expand_explicit_rows(
+                                exclude,
+                                matrix.location().with_keys(["exclude".into()]),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+
+                    expanded.retain(|expanded| !to_exclude.contains(expanded));
+                };
+
                 if let LoE::Literal(includes) = &inner.include {
                     let additional_expansions = includes
                         .iter()
@@ -101,31 +146,26 @@ impl<'doc> Expansions<'doc> {
                         })
                         .collect::<Vec<_>>();
 
-                    expansions.extend(additional_expansions);
+                    expanded.extend(additional_expansions);
                 };
 
-                // BUG: excludes should be processed before includes, since that's what GitHub does.
-                // BUG: we should handle LoE::Expr as an indicator of an indirect matrix.
-                let LoE::Literal(excludes) = &inner.exclude else {
-                    return Self(expansions);
+                // Don't miss any indirect matrices, handling inclusions and exclusions
+                // defined by expressions
+                let maybe_misses_inclusions = match &inner.include {
+                    LoE::Expr(_) => Some(matrix.location().with_keys(["include".into()])),
+                    _ => None,
                 };
 
-                let to_exclude = excludes
-                    .iter()
-                    .flat_map(|exclude| {
-                        Self::expand_explicit_rows(
-                            exclude,
-                            matrix.location().with_keys(["exclude".into()]),
-                        )
-                    })
-                    .collect::<Vec<_>>();
+                let maybe_misses_exclusions = match &inner.exclude {
+                    LoE::Expr(_) => Some(matrix.location().with_keys(["exclude".into()])),
+                    _ => None,
+                };
 
-                Self(
-                    expansions
-                        .into_iter()
-                        .filter(|expanded| !to_exclude.contains(expanded))
-                        .collect(),
-                )
+                Self {
+                    expanded,
+                    indeterminate_expansions: maybe_misses_inclusions,
+                    indeterminate_exclusions: maybe_misses_exclusions,
+                }
             }
         }
     }
@@ -247,7 +287,7 @@ impl<'doc> Matrix<'doc> {
     pub(crate) fn expands_to_static_values(&self, context: &Context) -> bool {
         // If we have an indirect matrix, we can't determine whether it expands to
         // static values or not.
-        if matches!(self.inner, LoE::Expr(_)) {
+        if self.expansions().indeterminate_expansions.is_some() {
             return false;
         }
 
@@ -957,7 +997,7 @@ jobs:
         "#);
 
         // Ensure that we can concretize every expansion's location without error.
-        for expansion in matrix.expansions().0 {
+        for expansion in matrix.expansions().expanded {
             expansion.location.concretize(workflow.as_document())?;
         }
 
@@ -1053,9 +1093,59 @@ jobs:
         };
 
         let matrix = Matrix::new(&job).unwrap();
-        assert!(matrix.expansions().0.is_empty());
+        let expansions = matrix.expansions();
+        assert!(expansions.expanded.is_empty());
+        assert!(expansions.indeterminate_expansions.is_some());
+        assert!(expansions.indeterminate_exclusions.is_none());
 
         assert!(!matrix.expands_to_static_values(&Context::parse("matrix.nonexistent").unwrap()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_matrix_expands_indirect_exclusions_inclusions() -> anyhow::Result<()> {
+        let workflow_yaml = r#"
+name: test
+on: push
+jobs:
+  indirect-matrix:
+    name: indirect-matrix
+    runs-on: ubuntu-26.04
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+        image:
+          - ubuntu@latest
+        include: ${{ fromJSON(vars.EXTRA_TARGETS) }}
+        exclude: ${{ fromJSON(vars.KNOWN_BROKEN_COMBOS) }}
+    steps:
+      - name: Noop
+        run: true
+        "#;
+
+        let workflow = Workflow::from_string(
+            workflow_yaml.into(),
+            InputKey::local("fakegroup".into(), "indirect-matrix.yml", None, None),
+        )?;
+
+        let job = {
+            let github_actions_models::workflow::Job::NormalJob(job) =
+                workflow.jobs.get("indirect-matrix").unwrap()
+            else {
+                panic!("Expected a normal job");
+            };
+
+            NormalJob::new("indirect-matrix", job, &workflow)
+        };
+
+        let matrix = Matrix::new(&job).unwrap();
+        let expansions = matrix.expansions();
+        assert_eq!(expansions.expanded.iter().count(), 3);
+        assert!(expansions.indeterminate_expansions.is_some());
+        assert!(expansions.indeterminate_exclusions.is_some());
 
         Ok(())
     }

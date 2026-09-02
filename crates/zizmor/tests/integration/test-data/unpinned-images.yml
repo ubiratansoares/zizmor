@@ -126,3 +126,45 @@ jobs:
       - uses: docker://ubuntu
       - uses: docker://ubuntu:latest
       - uses: docker://ghcr.io/pypa/gh-action-pypi-publish
+
+  indirect-matrix-full:
+    name: indirect-matrix-full
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      # NOT OK : we can't see any values
+      matrix: ${{ fromJSON(vars.CUSTOM_TARGETS) }}
+    steps:
+      - run: true
+
+  indirect-matrix-include:
+    name: indirect-matrix-include
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        # NOT OK : contributes values we cannot see.
+        include: ${{ fromJSON(vars.EXTRA_TARGETS) }}
+    steps:
+      - run: true
+
+  indirect-matrix-exclude:
+    name: indirect-matrix-exclude
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        image:
+          - ubuntu@sha256:bfadbbcb25fd75c30c295843f1a861414f46c080f0f1d0c5cd93843c88edabcf
+          - ubuntu:24.04 # tag-pinned
+        # NOT OK : may remove combinations
+        exclude: ${{ fromJSON(vars.KNOWN_BROKEN_COMBOS) }}
+    steps:
+      - run: true

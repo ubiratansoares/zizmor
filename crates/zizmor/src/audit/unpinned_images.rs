@@ -186,35 +186,68 @@ fn candidates_for_leaf<'doc>(
                 return vec![];
             };
 
-            matrix
-                .expansions()
+            let expansions = matrix.expansions();
+
+            // Maps to an optional SymbolicLocation
+            let missing_exclusion_annotation =
+                expansions
+                    .indeterminate_exclusions()
+                    .as_ref()
+                    .map(|location| {
+                        location
+                            .clone()
+                            .annotated("`exclude` is indirect; this combination may not run")
+                    });
+
+            let mut candidates = expansions
                 .iter()
                 .filter(|expansion| context.matches(expansion.path.as_str()))
                 .flat_map(|expansion| {
+                    let mut annotations = vec![
+                        matrix.location().key_only(),
+                        expansion
+                            .location()
+                            .annotated(format!("this expansion of {path}", path = expansion.path)),
+                    ];
+
+                    annotations.extend(missing_exclusion_annotation.clone());
                     if expansion.is_static() {
                         ImageCandidate::concrete(
                             &DockerUses::parse(&expansion.value),
                             location.clone(),
-                            vec![
-                                matrix.location().key_only(),
-                                expansion.location().annotated(format!(
-                                    "this expansion of {path}",
-                                    path = expansion.path
-                                )),
-                            ],
+                            annotations,
                         )
                         .into_iter()
                         .collect()
                     } else {
                         // The expansion itself contains an expression, so we
                         // can't analyze it statically.
-                        vec![ImageCandidate::opaque(
-                            location.clone(),
-                            vec![expansion.location()],
-                        )]
+                        let mut annotated = vec![expansion.location()];
+
+                        annotated.extend(missing_exclusion_annotation.clone());
+
+                        vec![ImageCandidate::opaque(location.clone(), annotated)]
                     }
                 })
-                .collect()
+                .collect::<Vec<_>>();
+
+            // An indirect matrix, dimensions block, or `include` means this path may
+            // take values we never saw -- possibly all of them.
+            if let Some(indirection) = expansions.indeterminate_expansions()
+                && candidates.is_empty()
+            {
+                candidates.push(ImageCandidate::opaque(
+                    location.clone(),
+                    vec![
+                        matrix.location().key_only(),
+                        indirection
+                            .clone()
+                            .annotated("values are populated indirectly here"),
+                    ],
+                ));
+            }
+
+            candidates
         }
         // Any other leaf (non-`matrix` context, function call, etc.) can't be
         // analyzed statically.
