@@ -178,6 +178,43 @@ fn test_self_hosted_matrix_exclusion() -> Result<()> {
 }
 
 #[test]
+fn test_self_hosted_matrix_indirect() -> Result<()> {
+    insta::assert_snapshot!(
+        zizmor()
+            .input(input_under_test(
+                "self-hosted/self-hosted-matrix-indirect.yml"
+            ))
+            .args(["--persona=auditor"])
+            .run()?,
+        @"
+    warning[self-hosted-runner]: runs on a self-hosted runner
+      --> @@INPUT@@:16:5
+       |
+    16 |     runs-on: ${{ matrix.os }}
+       |     ^^^^^^^^^^^^^^^^^^^^^^^^^ this matrix
+    17 |     strategy:
+    18 |       matrix: ${{ fromJSON(vars.DYNAMIC_RUNNERS) }}
+       |       --------------------------------------------- indirect `matrix` adds unanalyzable combinations
+       |
+       = note: audit confidence → Low
+
+    warning[self-hosted-runner]: runs on a self-hosted runner
+      --> @@INPUT@@:31:9
+       |
+    31 | /         include:
+    32 | |           - os: ${{ fromJSON(vars.EXTRA_RUNNERS) }}
+       | |___________________________________________________^ indirect `include` adds unanalyzable combinations
+       |
+       = note: audit confidence → Low
+
+    2 findings: 0 informational, 0 low, 2 medium, 0 high
+    "
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_self_hosted_provider() -> Result<()> {
     insta::assert_snapshot!(
         zizmor()
@@ -198,7 +235,17 @@ fn test_issue_283_repro() -> Result<()> {
             .input(input_under_test("self-hosted/issue-283-repro.yml"))
             .args(["--persona=auditor"])
             .run()?,
-        @"No findings to report. Good job!"
+        @"
+    warning[self-hosted-runner]: runs on a self-hosted runner
+      --> @@INPUT@@:18:5
+       |
+    18 |     runs-on: ${{inputs.os}}
+       |     ^^^^^^^^^^^^^^^^^^^^^^^ expression may expand into a self-hosted runner
+       |
+       = note: audit confidence → Low
+
+    1 finding: 0 informational, 0 low, 1 medium, 0 high
+    "
     );
 
     Ok(())

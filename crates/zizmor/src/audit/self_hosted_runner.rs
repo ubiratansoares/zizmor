@@ -42,21 +42,14 @@ impl Audit for SelfHostedRunner {
         let included_runners = &config.self_hosted_runner_config.deny_runners;
         let excluded_groups = &config.self_hosted_runner_config.allow_groups;
 
-        let self_hosted_runners = job
+        let mut findings = Vec::new();
+        let runners = job
             .runners(included_runners, excluded_groups)
-            .filter(|runner| match runner {
-                Runner::SelfHosted { .. } => true,
-                Runner::Indeterminate {
-                    self_hosted_evidence,
-                    ..
-                } => *self_hosted_evidence,
-                _ => false,
-            })
             .collect::<Vec<_>>();
 
-        let mut findings = Vec::new();
+        let no_runners_defined = runners.is_empty();
 
-        for runner in self_hosted_runners {
+        for runner in job.runners(included_runners, excluded_groups) {
             match runner {
                 Runner::SelfHosted {
                     location,
@@ -106,9 +99,87 @@ impl Audit for SelfHostedRunner {
                 Runner::Indeterminate {
                     location,
                     from_matrix,
-                    ..
+                    self_hosted_evidence,
                 } => {
-                    let finding_builder = Self::finding()
+                    let mut finding_builder = Self::finding()
+                        .confidence(Confidence::Low)
+                        .severity(Severity::Medium)
+                        .persona(Persona::Auditor);
+
+                    if from_matrix {
+                        if self_hosted_evidence {
+                            findings.push(
+                                finding_builder
+                                    .add_location(
+                                        job.location()
+                                            .primary()
+                                            .with_keys(["runs-on".into()])
+                                            .annotated("this matrix"),
+                                    )
+                                    .add_location(
+                                        location
+                                            .with_keys(["strategy".into()])
+                                            .annotated("matrix may use self-hosted runners"),
+                                    )
+                                    .build(job.parent())?,
+                            );
+                        } else {
+                            if let Some(matrix) = job.matrix() {
+                                // Evaluate also indirect matrix expansions
+
+                                let expansions = matrix.expansions();
+
+                                let indirect_inclusions =
+                                    expansions.indirect_inclusions().as_ref().map(|location| {
+                                        location.clone().annotated(
+                                            "indirect `include` adds unanalyzable combinations",
+                                        )
+                                    });
+
+                                if let Some(indirect_inclusions) = indirect_inclusions {
+                                    finding_builder =
+                                        finding_builder.add_location(indirect_inclusions);
+                                    findings.push(finding_builder.build(job.parent())?);
+                                }
+                            }
+                        };
+                    } else {
+                        findings.push(
+                            finding_builder
+                                .add_location(
+                                    job.location()
+                                        .primary()
+                                        .with_keys(["runs-on".into()])
+                                        .annotated(
+                                            "expression may expand into a self-hosted runner",
+                                        ),
+                                )
+                                .build(job.parent())?,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Do not miss a fully indirect matrix
+        if let Some(matrix) = job.matrix()
+            && no_runners_defined
+        {
+            let indirect_matrix =
+                matrix
+                    .expansions()
+                    .indirectly_expanded()
+                    .as_ref()
+                    .map(|location| {
+                        location
+                            .clone()
+                            .annotated("indirect `matrix` adds unanalyzable combinations")
+                    });
+
+            if let Some(indirect_matrix_location) = indirect_matrix {
+                findings.push(
+                    Self::finding()
                         .confidence(Confidence::Low)
                         .severity(Severity::Medium)
                         .persona(Persona::Auditor)
@@ -116,26 +187,11 @@ impl Audit for SelfHostedRunner {
                             job.location()
                                 .primary()
                                 .with_keys(["runs-on".into()])
-                                .annotated("expression may expand into a self-hosted runner"),
-                        );
-
-                    if from_matrix {
-                        findings.push(
-                            finding_builder
-                                .add_location(
-                                    location
-                                        .with_keys(["strategy".into()])
-                                        .annotated("matrix may use self-hosted runners"),
-                                )
-                                .build(job.parent())?,
-                        );
-                    } else {
-                        findings.push(finding_builder.build(job.parent())?);
-                    };
-                }
-                _ => {
-                    // should we trace here?
-                }
+                                .annotated("this matrix"),
+                        )
+                        .add_location(indirect_matrix_location)
+                        .build(job.parent())?,
+                );
             }
         }
 

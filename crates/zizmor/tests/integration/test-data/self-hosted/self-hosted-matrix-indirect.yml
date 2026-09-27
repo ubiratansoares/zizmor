@@ -1,0 +1,34 @@
+name: self-hosted-indirect-matrices
+
+on:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # NOT OK : matrix is fully indirect
+  indirect-matrix-full:
+    name: indirect-matrix-full
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix: ${{ fromJSON(vars.DYNAMIC_RUNNERS) }}
+    steps:
+      - run: true
+
+  # NOT OK : `include` is indirect
+  indirect-matrix-include:
+    name: indirect-matrix-include
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-26.04
+        include:
+          - os: ${{ fromJSON(vars.EXTRA_RUNNERS) }}
+    steps:
+      - run: true

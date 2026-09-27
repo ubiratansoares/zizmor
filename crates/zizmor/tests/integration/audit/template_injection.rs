@@ -62,7 +62,7 @@ fn test_issue_22_repro() -> Result<()> {
         zizmor()
             .input(input_under_test("template-injection/issue-22-repro.yml"))
             .run()?,
-        @"No findings to report. Good job! (6 suppressed)"
+        @"No findings to report. Good job! (7 suppressed)"
     );
 
     Ok(())

@@ -141,46 +141,66 @@ impl<'doc> Expansions<'doc> {
 
                 let mut expanded = Self::expand_dimensions(dimensions, location.clone());
 
-                // Should be processed before includes, since that's what GitHub does.
-                if let LoE::Literal(excludes) = &inner.exclude {
-                    let to_exclude = excludes
-                        .iter()
-                        .flat_map(|exclude| {
-                            Self::expand_explicit_rows(
-                                exclude,
-                                location.with_keys(["exclude".into()]),
-                            )
-                        })
-                        .collect::<Vec<_>>();
+                // Exclusions should be processed before inclusions,
+                // since that's what GitHub does.
 
-                    expanded.retain(|expanded| !to_exclude.contains(expanded));
-                };
-
-                if let LoE::Literal(includes) = &inner.include {
-                    let additional_expansions = includes
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(idx, include)| {
-                            Self::expand_explicit_rows(
-                                include,
-                                location.clone().with_keys(["include".into(), idx.into()]),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-
-                    expanded.extend(additional_expansions);
-                };
-
-                // Don't miss any indirections, handling inclusions and exclusions
-                // defined by expressions
-                let maybe_indirect_inclusions = match &inner.include {
-                    LoE::Expr(_) => Some(location.clone().with_keys(["include".into()])),
-                    _ => None,
-                };
-
+                // Process exclusions and flag whether then expand to non-static values
+                let exclude_location = Some(location.clone().with_keys(["exclude".into()]));
                 let maybe_indirect_exclusions = match &inner.exclude {
                     LoE::Expr(_) => Some(location.clone().with_keys(["exclude".into()])),
-                    _ => None,
+                    LoE::Literal(excludes) => {
+                        let to_exclude = excludes
+                            .iter()
+                            .flat_map(|exclude| {
+                                Self::expand_explicit_rows(
+                                    exclude,
+                                    location.with_keys(["exclude".into()]),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+
+                        let has_non_static_expansions =
+                            to_exclude.iter().any(|expansion| !expansion.is_static());
+
+                        expanded.retain(|expanded| !to_exclude.contains(expanded));
+
+                        if has_non_static_expansions {
+                            exclude_location
+                        } else {
+                            None
+                        }
+                    }
+                };
+
+                let include_location = Some(location.clone().with_keys(["include".into()]));
+
+                // Process inclusions and flag whether then expand to non-static values
+                let maybe_indirect_inclusions = match &inner.include {
+                    LoE::Expr(_) => include_location,
+                    LoE::Literal(includes) => {
+                        let additional_expansions = includes
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(idx, include)| {
+                                Self::expand_explicit_rows(
+                                    include,
+                                    location.clone().with_keys(["include".into(), idx.into()]),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+
+                        let has_non_static_expansions = additional_expansions
+                            .iter()
+                            .any(|expansion| !expansion.is_static());
+
+                        expanded.extend(additional_expansions);
+
+                        if has_non_static_expansions {
+                            include_location
+                        } else {
+                            None
+                        }
+                    }
                 };
 
                 Self {
